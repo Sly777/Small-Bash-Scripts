@@ -52,6 +52,7 @@ This script generates or updates markdown files with detailed information about 
 - `--json`: Generate JSON output
 - `--debug`: Enable debug mode
 - `-h, --help`: Display help message
+- `--model=<model_name>`: Specify the model to use (default: llama3.1:latest)
 
 ### 3. update_links
 
