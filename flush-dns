@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Function to display help message
+show_help() {
+    echo "Usage: ./flush-dns [OPTION]"
+    echo "Flush the DNS cache on macOS."
+    echo
+    echo "Options:"
+    echo "  -h, --help    Display this help message and exit"
+    echo
+    echo "This script flushes the DNS cache by restarting the mDNSResponder service"
+    echo "and clearing the system's DNS cache using dscacheutil."
+}
+
+# Check if help flag is provided
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+echo "Flushing DNS cache..."
+sudo killall -HUP mDNSResponder;sudo killall mDNSResponderHelper;sudo dscacheutil -flushcache
+echo "DNS cache has been flushed successfully."

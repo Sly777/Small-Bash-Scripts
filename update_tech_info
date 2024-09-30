@@ -1,0 +1,224 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Configuration
+MODEL="llama3.1:latest"
+OLLAMA_API="http://localhost:11434/api/generate"
+OUTPUT_DIR="."
+INPUT_DIR=""
+JSON_OUTPUT=false
+DEBUG_MODE=false
+
+# Function to log debug messages
+debug_log() {
+    if [ "$DEBUG_MODE" = true ]; then
+        echo "Debug: $1" >&2
+    fi
+}
+
+# Function to generate content using Ollama API
+generate_content() {
+    local topic="$1"
+    local prompt="Generate a markdown detailed description (what it is, what it does, how it works, which technologies it uses, etc) and 3 relevant web links for $topic. Just output the content, no intro, no comments, etc. Add dataview section at the end. Combine all sub sections on description with one paragraph. $topic can be a methodology, a term, a technology, a framework, a library, a tool, etc. For example; SEO is a technology that helps you get more traffic from search engines, or Testing Framework is a technology that helps you test your code. Format technology terms, methods, libraries, and special words as bold with double square brackets. For plurals, only format the singular part, for Examples: [[Tailwind CSS]], [[GitHub]], **[[LoRA]]**s, **[[LLM]]**s. If the technology term has 'JS', 'IO' or 'AI', never put a dot, for Examples: Next.JS -> NextJS, Nest.JS -> NestJS, Node.JS -> NodeJS, Test.AI -> TestAI. If there is a short name or acronym for the technology, tag the short version and don't tag the full name. And Don't put unnecessary whitespaces or newlines. Don't change anything on tags and dataview section. Use the following template:
+---
+tags:
+  - EncyclopediaNote
+aliases:
+---
+### ℹ️ Info
+
+[Description of $topic]
+
+---
+
+### 🔗 Links
+
+- [Link 1](#) - Description for link 1.
+- [Link 2](#) - Description for link 2.
+- [Link 3](#) - Description for link 3.
+
+---
+
+\`\`\`dataview
+TABLE
+    WITHOUT ID
+    rows.item.link as Link,
+    rows.item.text AS Mentions
+FROM
+    [[]]
+
+FLATTEN file.lists as item
+
+WHERE
+    file.name != \"6. Other Stuff\"
+    AND contains(item.outlinks, [[]])
+
+SORT
+    file.mtime DESC
+
+GROUP BY
+    file.name
+\`\`\`"
+
+    debug_log "Generating content for topic: $topic"
+    debug_log "Using model: $MODEL"
+    debug_log "Sending request to Ollama API..."
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        debug_log "Generating JSON output..."
+        curl -s -X POST "$OLLAMA_API" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"$MODEL\", \"prompt\": $(jq -n --arg p "$prompt" '$p')}" |
+            jq -s 'map(select(.response != null)) | {model: .[0].model, created_at: .[0].created_at, response: map(.response) | join("")}'
+    else
+        debug_log "Generating formatted content..."
+        curl -s -X POST "$OLLAMA_API" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"$MODEL\", \"prompt\": $(jq -n --arg p "$prompt" '$p')}" |
+            jq -r '.response' |
+            awk '{printf "%s", $0; if ($0 ~ /^$/) printf "\n"}' |
+            sed 's/^[[:space:]]*//'
+    fi
+
+    debug_log "Content generation complete."
+}
+
+# Function to find existing file or create new one
+find_or_create_file() {
+    local topic="$1"
+    local base_name="${topic// /_}"
+    local file_pattern="${OUTPUT_DIR}/${base_name}.md"
+
+    debug_log "Searching for existing file for topic: $topic"
+    debug_log "Looking in directory: $OUTPUT_DIR"
+
+    # Check for existing file (case-insensitive)
+    local existing_file=$(find "$OUTPUT_DIR" -maxdepth 1 -type f -iname "${base_name}.md" | head -n 1)
+
+    if [[ -n "$existing_file" ]]; then
+        debug_log "Found existing file: $existing_file"
+        echo "$existing_file"
+    else
+        debug_log "No existing file found. Will create: $file_pattern"
+        echo "$file_pattern"
+    fi
+}
+
+# Function to update a single file
+update_file() {
+    local filename="$1"
+    local topic=$(basename "$filename" .md | tr '_' ' ')
+
+    debug_log "Updating file: $filename"
+    debug_log "Topic: $topic"
+
+    if [[ ! -s "$filename" ]]; then
+        echo "Updating $filename..."
+        content=$(generate_content "$topic")
+        echo "$content" > "$filename"
+
+        # New step: Replace .js with JS in the content
+        sed -i '' 's/\.js/JS/g' "$filename"
+
+        echo "Updated file: $filename"
+        debug_log "Content written to file and .js replaced with JS."
+    else
+        echo "Skipping $filename (not empty)"
+        debug_log "File is not empty. Skipping update."
+    fi
+}
+
+# Function to display usage help
+display_help() {
+    echo "Usage: $0 [OPTIONS] [TOPIC]"
+    echo "Update or create a markdown file with detailed information about a technology, library, framework, etc. via Ollama API."
+    echo
+    echo "Options:"
+    echo "  --inputfolder=<path>  Specify input/output folder (default: current directory)"
+    echo "  --all                 Update all empty .md files in the specified folder"
+    echo "  --json                Generate JSON output (outputs to console)"
+    echo "  --debug               Enable debug mode for verbose output"
+    echo "  --model=<model_name>  Specify the model to use (default: llama3.1:latest)"
+    echo
+    echo "Examples:"
+    echo "  $0 \"react native\"                     # Creates or updates ./react_native.md in the current directory"
+    echo "  $0 \"angular-elements\" --inputfolder=\"~/projects/\"  # Creates or updates ~/projects/angular-elements.md"
+    echo "  $0 --all                               # Updates all empty .md files in the current directory"
+    echo "  $0 --all --inputfolder=\"~/docs/\"        # Updates all empty .md files in ~/docs/"
+    echo "  $0 \"react\" --json                      # Generates JSON output for \"react\" and outputs to console"
+    echo "  $0 \"react\" --debug                     # Debug output for \"react\""
+    echo "  $0 --debug --all --inputfolder=\"~/docs/\"  # Updates all empty .md files in ~/docs/ with debug output"
+    echo "  $0 \"react\" --model=\"gpt4-vision\"       # Uses the specified model instead of the default"
+    echo
+    echo "Note: If no options are provided, the script will prompt for a topic and update/create a file in the current directory."
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --inputfolder=*)
+            INPUT_DIR="${1#*=}"
+            shift
+            ;;
+        --all)
+            ALL=true
+            shift
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        --model=*)
+            MODEL="${1#*=}"
+            shift
+            ;;
+        --help|-h)
+            display_help
+            exit 0
+            ;;
+        *)
+            TOPIC="$1"
+            shift
+            ;;
+    esac
+done
+
+# Set OUTPUT_DIR based on INPUT_DIR if provided
+if [[ -n "$INPUT_DIR" ]]; then
+    OUTPUT_DIR="$INPUT_DIR"
+fi
+
+# Ensure OUTPUT_DIR exists
+mkdir -p "$OUTPUT_DIR"
+
+# Main execution
+if [[ -z ${TOPIC:-} ]] && [[ -z ${ALL:-} ]]; then
+    display_help
+    exit 1
+elif [[ -n ${ALL:-} ]]; then
+    debug_log "Updating all empty .md files in $OUTPUT_DIR"
+    # Find all empty .md files in the directory and sort them alphabetically
+    while IFS= read -r -d '' file; do
+        empty_files+=("$file")
+    done < <(find "$OUTPUT_DIR" -maxdepth 1 -type f -iname "*.md" -empty -print0 | sort -z)
+
+    for file in "${empty_files[@]}"; do
+        update_file "$file"
+    done
+else
+    if [ "$JSON_OUTPUT" = true ]; then
+        debug_log "Generating JSON output for topic: $TOPIC"
+        generate_content "$TOPIC"
+    else
+        debug_log "Updating single topic: $TOPIC"
+        filename=$(find_or_create_file "$TOPIC")
+        update_file "$filename"
+    fi
+fi
+
+debug_log "Script execution complete."

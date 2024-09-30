@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# Directory containing the .md files
+directory="."
+
+# Default values
+custom_key="tags"
+custom_value="EncyclopediaNote"
+
+# Function to display usage information
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "Update markdown files with custom frontmatter."
+    echo
+    echo "Options:"
+    echo "  --customKey=KEY    Specify the frontmatter key (default: tags)"
+    echo "  --customValue=VALUE Specify the value to add (default: EncyclopediaNote)"
+    echo "                     Use empty quotes \"\" for an empty value"
+    echo "  -h, --help         Display this help message"
+    echo
+    echo "Examples:"
+    echo "  $0"
+    echo "  $0 --customKey=aliases --customValue=\"My Alias\""
+    echo "  $0 --customKey=tags --customValue=\"CustomTag\""
+    echo "  $0 --customKey=aliases --customValue=\"\""
+}
+
+# Parse command-line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --customKey=*) custom_key="${1#*=}" ;;
+        --customValue=*) custom_value="${1#*=}" ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown parameter passed: $1"; usage; exit 1 ;;
+    esac
+    shift
+done
+
+# Function to check if file starts with frontmatter
+has_frontmatter() {
+    [[ $(sed -n '1p' "$1") == "---" ]] && sed -n '1,/^---$/p' "$1" | grep -q "^---$"
+}
+
+# Function to check if file has the specified key-value pair in the frontmatter
+has_key_value() {
+    sed -n '1,/^---$/p' "$1" | grep -q "^$custom_key:"
+    if [ $? -eq 0 ]; then
+        if [ "$custom_key" = "tags" ]; then
+            [ -n "$custom_value" ] && sed -n '1,/^---$/p' "$1" | grep -q "^ *- *$custom_value *$"
+        else
+            sed -n '1,/^---$/p' "$1" | grep -q "^$custom_key: *$custom_value *$"
+        fi
+    else
+        return 1
+    fi
+}
+
+# Loop through all .md files in the directory
+for file in "$directory"/*.md; do
+    if [ -f "$file" ]; then
+        if ! has_frontmatter "$file"; then
+            # If no frontmatter at the start, add new frontmatter
+            temp_file=$(mktemp)
+            if [ "$custom_key" = "tags" ] && [ -n "$custom_value" ]; then
+                echo -e "---\n$custom_key:\n- $custom_value\n---\n\n$(cat "$file")" > "$temp_file"
+            else
+                echo -e "---\n$custom_key: $custom_value\n---\n\n$(cat "$file")" > "$temp_file"
+            fi
+            mv "$temp_file" "$file"
+            echo "Added frontmatter with $custom_key: $custom_value: $file"
+        elif ! has_key_value "$file"; then
+            # If frontmatter exists but no specified key-value pair, add it
+            temp_file=$(mktemp)
+            awk -v key="$custom_key" -v value="$custom_value" '
+                BEGIN {in_frontmatter=0; key_found=0; added=0}
+                NR==1 && $0=="---" {in_frontmatter=1; print; next}
+                in_frontmatter==1 && /^---$/ {in_frontmatter=2}
+                in_frontmatter==1 && $0 ~ "^" key ":" {key_found=1; if (key != "tags" || value == "") {print $0 " " value; added=1; next}}
+                in_frontmatter==1 && key_found==1 && key == "tags" && value != "" && !added && $0 ~ /^ *-/ {print; print "- " value; added=1; next}
+                in_frontmatter==1 && /^[a-zA-Z]/ && key_found==0 {
+                    if (key == "tags" && value != "") {print key ":"; print "- " value;}
+                    else {print key ": " value;}
+                    print; added=1; key_found=1; next
+                }
+                in_frontmatter==2 && !added {
+                    if (key == "tags" && value != "") {if (!key_found) print key ":"; print "- " value;}
+                    else {print key ": " value;}
+                    print; added=1; in_frontmatter=0; next
+                }
+                {print}
+            ' "$file" > "$temp_file"
+            mv "$temp_file" "$file"
+            echo "Added $custom_key: $custom_value: $file"
+        else
+            echo "Skipped: $file (already has $custom_key: $custom_value)"
+        fi
+    fi
+done
+
+echo "All .md files processed."

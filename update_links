@@ -1,0 +1,106 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Debug flag
+DEBUG=false
+
+# Function to print usage and help information
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+This script updates Markdown links in files.
+
+Options:
+  --checkFile <filename>  Process only the specified file
+  --debug                 Enable debug output
+  -h, --help              Show this help message and exit
+
+Examples:
+  $0 --checkFile "file.md" --debug  # Debug output for file.md
+  $0 --debug                        # Debug output for all files
+  $0 --checkFile "file.md"          # Check file.md for links and update them
+  $0                                # Check all files for links and update them
+
+EOF
+}
+
+# Function to print usage
+usage() {
+    echo "Usage: $0 [--checkFile <filename>] [--debug] [-h|--help]" >&2
+    echo "Try '$0 --help' for more information." >&2
+    exit 1
+}
+
+# Debug log function
+debug_log() {
+    if [[ "$DEBUG" == true ]]; then
+        printf "[DEBUG] %s\n" "$1" >&2
+    fi
+}
+
+# Parse command line arguments
+check_file=""
+while (( $# > 0 )); do
+    case "$1" in
+        --checkFile) check_file="$2"; shift 2 ;;
+        --debug) DEBUG=true; shift ;;
+        -h|--help) show_help; exit 0 ;;
+        *) usage ;;
+    esac
+done
+
+debug_log "Script started with arguments: $*"
+
+# Function to process files
+process_files() {
+    perl -i -0777 -pe '
+        BEGIN {
+            @files = glob("*.md");
+            %base_names = map { $_ => (split /\./, $_)[0] } @files;
+        }
+        foreach $file (@files) {
+            next if $file eq $ARGV;
+            $base_name = $base_names{$file};
+            $escaped_base_name = quotemeta($base_name);
+
+            # Temporarily mark URLs and existing links
+            s/(\[([^\]]+)\]\(https?:\/\/[^\)]+\))/__MDLINK__$1__MDLINK__/g;
+            s/(https?:\/\/[^\s\]]+)/__URL__$1__URL__/g;
+            s/(\[\[[^\]]+\]\])/__WIKILINK__$1__WIKILINK__/g;
+
+            # Perform the replacements, excluding .com and .net, avoiding text starting with [ or /, and not ending with " Repository"
+            s/(?<![\/\[])\b${escaped_base_name}s?\b(?!\.(?:com|net|org|io|ai)\b)(?!\s+Repository\b)/[[${base_name}]]/gi;
+
+            # Clean up double wiki-style links
+            s/\[\[\[\[([^\]]+)\]\]\]\]/[[$1]]/g;
+
+            # Restore the original URLs and links
+            s/__MDLINK__(.*?)__MDLINK__/$1/g;
+            s/__URL__(.*?)__URL__/$1/g;
+            s/__WIKILINK__(.*?)__WIKILINK__/$1/g;
+        }
+    ' "$1"
+}
+
+export -f process_files debug_log
+export DEBUG
+
+# Process files
+echo "Processing files..."
+if [[ -n "$check_file" ]]; then
+    debug_log "Check file specified: $check_file"
+    if [[ ! -f "$check_file" ]]; then
+        echo "Error: File $check_file not found" >&2
+        exit 1
+    fi
+    process_files "$check_file"
+else
+    debug_log "No specific check file specified, processing all files"
+    find . -maxdepth 1 -type f -name "*.md" -print0 |
+        parallel -0 process_files
+fi
+
+debug_log "All files have been processed"
+echo "Finished processing all files."

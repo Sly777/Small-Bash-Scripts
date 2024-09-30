@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# Function to display help information
+display_help() {
+    echo "Usage: $0 [OPTION]"
+    echo "Compare applications in /Applications with available Homebrew casks."
+    echo
+    echo "Options:"
+    echo "  -h, --help    Display this help message and exit"
+    echo
+    echo "This script compares the applications installed in your /Applications folder"
+    echo "with the list of available Homebrew casks. It helps identify applications"
+    echo "that are not managed by Homebrew but could potentially be installed via casks."
+    echo
+    echo "The script will:"
+    echo "1. Fetch and cache the list of available casks (if not already cached today)"
+    echo "2. Get the list of currently installed casks"
+    echo "3. Compare applications in /Applications with these lists"
+    echo "4. Display applications that are not managed by Homebrew, along with potential cask names"
+    echo
+    echo "Note: Some system applications are ignored in this comparison."
+}
+
+# Check for help flag
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    display_help
+    exit 0
+fi
+
+echo "⊚ Starting the application comparison process..."
+
+NOCOLOR='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+
+# Define a list of applications to ignore (normalized names)
+declare -a ignore_apps=(
+    "xcode"
+    "imovie"
+    "pages"
+    "keynote"
+    "numbers"
+    "safari"
+    "garageband"
+)
+
+# Function to get the corresponding cask name
+get_cask_name() {
+    local app_name=$1
+    case "$app_name" in
+        "cleanshot x") echo "cleanshot" ;;
+        "zoom.us") echo "zoom" ;;
+        *) echo "$app_name" ;; # Default case
+    esac
+}
+
+# Function to normalize names
+# Converts to lowercase, removes file extension, and replaces dashes with spaces
+normalize_name() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/\.app$//' | tr '-' ' '
+}
+
+# Function to check if app is in the ignore list
+is_ignored_app() {
+    local app=$1
+    for ignored_app in "${ignore_apps[@]}"; do
+        if [ "$app" == "$ignored_app" ]; then
+            return 0 # true, app should be ignored
+        fi
+    done
+    return 1 # false, app should not be ignored
+}
+
+# Define file paths for cask lists
+temp_cask_file="/tmp/cask_list_$(date +%Y%m%d)"
+temp_installed_cask_file=$(mktemp)
+
+# Generate list of available casks if not done today
+if [ ! -f "$temp_cask_file" ]; then
+    echo "⊚ Fetching the list of available casks..."
+    brew search --casks '*' | while read -r cask; do
+        normalize_name "$cask" >> "$temp_cask_file"
+    done
+    sort -u "$temp_cask_file" -o "$temp_cask_file"
+    echo "⊚ List of available casks updated."
+else
+    echo "⊚ Using existing list of available casks generated today."
+fi
+
+echo "⊚ Fetching the list of installed casks..."
+# Store normalized names of installed casks
+brew list --cask | while read -r cask; do
+    normalize_name "$cask" >> "$temp_installed_cask_file"
+done
+sort -u "$temp_installed_cask_file" -o "$temp_installed_cask_file"
+echo "⊚ List of installed casks updated."
+
+echo "⊚ Comparing applications in /Applications with available casks..."
+echo "----------------------------------------"
+# Loop through applications in /Applications
+for app in /Applications/*.app; do
+    app_name=$(basename "$app" .app)
+    normalized_app_name=$(normalize_name "$app_name")
+
+    # Check if there is a mapping for this app
+    cask_name=$(get_cask_name "$normalized_app_name")
+
+    # Skip ignored applications
+    if is_ignored_app "$normalized_app_name"; then
+        continue
+    fi
+
+    # Check against installed casks first
+    if ! grep -qx "$cask_name" "$temp_installed_cask_file"; then
+        # Then check against available casks
+        if ! grep -qx "$cask_name" "$temp_cask_file"; then
+            potential_cask_name=$(grep -i "$normalized_app_name" "$temp_cask_file" | head -n 1)
+            if [ -z "$potential_cask_name" ]; then
+                echo -e "$app_name ${RED}(no cask found - check manually)${NOCOLOR}"
+            else
+                echo -e "$app_name ${GREEN}(potential cask name: \`$potential_cask_name\`)${NOCOLOR}"
+            fi
+        fi
+    fi
+done
+echo "----------------------------------------"
+echo "⊚ Comparison complete."
+
+# Clean up installed cask temporary file
+rm "$temp_installed_cask_file"
+
+echo "⊚ Temporary files cleaned up. Process finished."
